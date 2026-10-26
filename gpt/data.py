@@ -1,6 +1,6 @@
 import torch
 
-def split_data(data):
+def split_data(data: torch.Tensor):
     bin_1 = int(0.8 * len(data))
     bin_2 = int(0.9 * len(data))
 
