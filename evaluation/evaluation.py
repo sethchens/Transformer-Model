@@ -1,8 +1,10 @@
 import math
 import time
 import json
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from gpt.model import GptConfig
 from gpt.data import get_batch
@@ -27,22 +29,45 @@ def estimate_loss(model, splits, batch_size, block_size, device, eval_iters=20):
     return out
 
 @torch.no_grad()
-def estimate_perplexity(model: nn.Module, val: torch.Tensor):
-    assert val.dim() == 1, f"expected 1-D token ids, got shape {tuple(val.shape)}"
-    assert val.dtype == torch.long, f"expected torch.long, got {val.dtype}"
-    
+@torch.no_grad()
+def estimate_perplexity(model, data, max_tokens=500_000, batch_size=64):
+    """Perplexity over a fixed, in-order slice of held-out data.
+    data: 1-D np.ndarray / memmap (uint16) or 1-D torch tensor of token IDs."""
+    assert data.ndim == 1, "data must be 1-D token IDs"
+
+    # convert only the slice we evaluate
+    d = data[:max_tokens + 1]
+    if isinstance(d, np.ndarray):
+        d = torch.from_numpy(d.astype(np.int64))
+    d = d.long()
+
     config = model.get_config()
+    T = config.block_size
+    device = next(model.parameters()).device
+
+    # inputs/targets, trimmed to whole windows → [N, T]
+    x, y = d[:-1], d[1:]
+    n = (len(x) // T) * T
+    assert n > 0, "not enough tokens for one window"
+    x = x[:n].view(-1, T)
+    y = y[:n].view(-1, T)
+
+    was_training = model.training
     model.eval()
-    losses = []
-    for i in range(0, len(val) - config.block_size, config.block_size):
-        x_val = val[i:i+config.block_size].unsqueeze(0).to(device)
-        y_val = val[i+1:i+config.block_size+1].unsqueeze(0).to(device)
-        _, loss = model(x_val, y_val)
-        losses.append(loss.item()) # .item() turns the loss scaler into a Python float
-    mean_nll = sum(losses) / len(losses)
-    perplexity = math.exp(mean_nll)
-    model.train()
-    return mean_nll, perplexity
+    total_nll, total_tokens = 0.0, 0
+    for i in range(0, x.size(0), batch_size):
+        xb = x[i:i + batch_size].to(device)
+        yb = y[i:i + batch_size].to(device)
+        logits, _ = model(xb)                                   # [B, T, V]
+        nll = F.cross_entropy(logits.view(-1, logits.size(-1)),
+                              yb.view(-1), reduction="sum")
+        total_nll += nll.item()
+        total_tokens += yb.numel()
+    if was_training:
+        model.train()
+
+    mean_nll = total_nll / total_tokens
+    return math.exp(mean_nll), mean_nll
 
 def count_parameter(model: nn.Module):
     learned_params = {}
@@ -133,7 +158,7 @@ def evaluate_and_save(model: nn.Module, which: str, val: torch.Tensor, split: st
     config = model.get_config()
 
     # get model results
-    mean_nll, perplexity = estimate_perplexity(model, val)
+    perplexity, mean_nll = estimate_perplexity(model, val)
     _, total = count_parameter(model)
     peak_by_inf_mb, shape_inf = get_peak_mem_inference(model_cls, batch_size, config)
     peak_by_train_mb, shape_train = get_peak_mem_train(model_cls, batch_size, config)
