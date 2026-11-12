@@ -1,18 +1,10 @@
-from dataclasses import dataclass
-
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-@dataclass
-class GptConfig:
-    vocab_size: int = 65
-    block_size: int = 8
-    n_embd: int = 32
-    n_layer: int = 3
-    n_head: int = 4    
+from dataclasses import dataclass
+from gpt.config import GptConfig
 
 class Head(nn.Module):
     def __init__(self, config: GptConfig, hs: int):
@@ -84,8 +76,10 @@ class Block(nn.Module):
         super().__init__()
         self.sa = MultiHead(config)
         self.ffwd = FeedForward(config)
-        self.ln_1 = nn.LayerNorm(config.n_embd) # it takes on required arg 'normalized_shape', which is the last dim
-        self.ln_2 = nn.LayerNorm(config.n_embd)
+        norm_1 = make_norm(config)
+        norm_2 = make_norm(config)
+        self.ln_1 = norm_1 # it takes on required arg 'normalized_shape', which is the last dim
+        self.ln_2 = norm_2
 
     def forward(self, x):
         # the structure from attention is all you need paper
@@ -112,7 +106,22 @@ class Tokenizer():
     def decode(self, ids):
        return ''.join([self.itos[id] for id in ids]) # .join takes a list and concat them into a string
 
-        
+def make_norm(config):
+    if config.norm == "layernorm":
+        return nn.LayerNorm(config.n_embd)
+    if config.norm == "rmsnorm":
+        return RMSNorm(config.n_embd)
+    raise ValueError(f"unknown norm: {config.norm}")
+
+class RMSNorm(nn.Module):
+    def __init__(self, n_embd, eps=1e-6):    
+        super().__init__()    
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(n_embd)) # C
+
+    def forward(self, x):
+        rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps) # (B, T, 1)
+        return self.g * (x/rms) # (B, T, C); * is element-wise
     
 class Gpt(nn.Module):
     def __init__(self, config: GptConfig):
@@ -146,13 +155,20 @@ class Gpt(nn.Module):
 
 
     @torch.no_grad()
-    def generate(self, token_ids, max_new_tokens):
+    def generate(self, token_ids, max_new_tokens, temp=1.0, top_k=None):
         self.eval()
 
         for _ in range(max_new_tokens):
             cropped_t = token_ids[:, -1 * self._config.block_size:]
             logits, _ = self(cropped_t)
             predictions = logits[:, -1, :] # (B, vocab_size)
+            predictions = predictions / temp
+
+            if top_k is not None:
+                top_k_pred = torch.topk(predictions, top_k) # returns two tensors (values (dot product), indices (tok_ids)) (B, k) with the value sorted descendently along last dim
+                cutoff = top_k_pred.values[:, [-1]] # todo: understand why [-1] (something about broadcasting)
+                predictions = predictions.masked_fill(predictions < cutoff, float("-inf"))
+
             prob = F.softmax(predictions, dim=-1) 
             last = torch.multinomial(prob, 1) # (B, 1); it returns the index it picks (token id) not the value
             token_ids = torch.cat((token_ids, last), dim=-1)

@@ -45,7 +45,7 @@ def tokenize_file(src, dst):
 
 
 def check(path, n=100):
-    enc = tiktoken.get_encoding("gpt2")
+    enc = get_tokenizer()
     data = np.memmap(path, dtype=np.uint16, mode="r")
     print(f"{path}: {len(data):,} tokens")
     print(enc.decode(data[:n].tolist()))

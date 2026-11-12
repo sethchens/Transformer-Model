@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from gpt.model import GptConfig
 from gpt.data import get_batch
+from gpt.config import TrainConfig
 from dataclasses import asdict
 from datetime import datetime
 
@@ -28,7 +29,6 @@ def estimate_loss(model, splits, batch_size, block_size, device, eval_iters=20):
     model.train()
     return out
 
-@torch.no_grad()
 @torch.no_grad()
 def estimate_perplexity(model, data, max_tokens=500_000, batch_size=64):
     """Perplexity over a fixed, in-order slice of held-out data.
@@ -127,7 +127,7 @@ def get_peak_mem_train(model_cls: type[nn.Module], batch_size: int, config: GptC
         return None
 
 @torch.no_grad()
-def get_token_ps_inf(model_cls: type[nn.Module], config: GptConfig, batch_size: int, n: int = 100):
+def get_token_ps_inf(model_cls: type[nn.Module], config: GptConfig, batch_size: int, n_forward_pass: int = 100):
     if torch.cuda.is_available():
         model = model_cls(config).to(device)
         model.eval() # so model behaves the way it does at inference
@@ -142,27 +142,27 @@ def get_token_ps_inf(model_cls: type[nn.Module], config: GptConfig, batch_size: 
         torch.cuda.synchronize()
         start = time.perf_counter()
 
-        for i in range(0, n):
+        for i in range(0, n_forward_pass):
             model(x)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - start
-        token_ps = (n * B * T) / elapsed
+        token_ps = (n_forward_pass * B * T) / elapsed
 
         return token_ps, x.shape
     else:
         return None
 
 # todo: seperate the evaluation and recording into two 
-def evaluate_and_save(model: nn.Module, which: str, val: torch.Tensor, split: str, batch_size: int, max_iters: int, lr, n: int = 100):
+def evaluate_and_save(model: nn.Module, val: torch.Tensor, split: str, tcfg: TrainConfig, n_forward_pass: int = 20):
     model_cls = type(model)
     config = model.get_config()
 
     # get model results
     perplexity, mean_nll = estimate_perplexity(model, val)
     _, total = count_parameter(model)
-    peak_by_inf_mb, shape_inf = get_peak_mem_inference(model_cls, batch_size, config)
-    peak_by_train_mb, shape_train = get_peak_mem_train(model_cls, batch_size, config)
-    token_ps, shape_tps_inf = get_token_ps_inf(model_cls, config, batch_size, n)
+    peak_by_inf_mb, shape_inf = get_peak_mem_inference(model_cls, tcfg.batch_size, config)
+    peak_by_train_mb, shape_train = get_peak_mem_train(model_cls, tcfg.batch_size, config)
+    token_ps, shape_tps_inf = get_token_ps_inf(model_cls, config, tcfg.batch_size, n_forward_pass)
 
     # get model configs from config argument
 
@@ -171,7 +171,7 @@ def evaluate_and_save(model: nn.Module, which: str, val: torch.Tensor, split: st
     device_name = torch.cuda.get_device_name() if torch.cuda.is_available() else 'cpu'
 
     record = {
-        "name": which,
+        "name": tcfg.run_name,
         "param": total,
         "split": split,
         "ppl": perplexity,
@@ -179,10 +179,10 @@ def evaluate_and_save(model: nn.Module, which: str, val: torch.Tensor, split: st
         "inf_mem_mb": peak_by_inf_mb,
         "train_mem_mb": peak_by_train_mb,
         "tps": token_ps,
+        "n_forward_pass": n_forward_pass,
         "input_shape": list(shape_inf),
         "config": asdict(config),
-        "max_iters": max_iters,
-        "lr": lr,
+        "train": asdict(tcfg),
         "timestamp": timestamp,
         "device_name": device_name
     }
