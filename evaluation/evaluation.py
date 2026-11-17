@@ -153,7 +153,8 @@ def get_token_ps_inf(model_cls: type[nn.Module], config: GptConfig, batch_size: 
         return None
 
 # todo: seperate the evaluation and recording into two 
-def evaluate_and_save(model: nn.Module, val: torch.Tensor, split: str, tcfg: TrainConfig, n_forward_pass: int = 20):
+def evaluate_and_save(model: nn.Module, val: torch.Tensor, split: str, tcfg: TrainConfig, n_forward_pass: int = 20,
+                      history: list | None = None, train_min: float | None = None):
     model_cls = type(model)
     config = model.get_config()
 
@@ -184,7 +185,9 @@ def evaluate_and_save(model: nn.Module, val: torch.Tensor, split: str, tcfg: Tra
         "config": asdict(config),
         "train": asdict(tcfg),
         "timestamp": timestamp,
-        "device_name": device_name
+        "device_name": device_name,
+        "train_min": train_min,  # wall-clock training time (None for old runs)
+        "curve": history,        # [{step, train, val, lr}, ...] from the eval steps
     }
 
     # save each record as jsonl

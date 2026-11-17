@@ -1,6 +1,8 @@
 import pandas as pd
 import streamlit as st
 
+from evaluation.labels import method_label
+
 RESULTS_PATH = "evaluation/results.jsonl"
 
 # label shown in the UI -> (column in results.jsonl, unit, is lower better?)
@@ -18,7 +20,9 @@ HIDDEN_BY_DEFAULT = ["baseline_char", "stalled_lr1e-3"]
 
 def load_results(path):
     """Read one JSON object per line into a table (re-read on every rerun)."""
-    return pd.read_json(path, lines=True)
+    df = pd.read_json(path, lines=True)
+    df["method"] = [method_label(r) for r in df.to_dict("records")]
+    return df
 
 
 # ------------------ PAGE ------------------
@@ -47,10 +51,11 @@ left, right = st.columns([3, 2])
 with left:
     st.subheader("All runs")
     st.dataframe(
-        view[["name", "ppl", "param", "train_mem_mb", "inf_mem_mb", "tps", "timestamp"]],
+        view[["name", "method", "ppl", "param", "train_mem_mb", "inf_mem_mb", "tps", "timestamp"]],
         hide_index=True,
         column_config={
             "name": "Run",
+            "method": "Method",
             "ppl": st.column_config.NumberColumn("Perplexity", format="%.3f"),
             "param": st.column_config.NumberColumn("Params", format="%d"),
             "train_mem_mb": st.column_config.NumberColumn("Train mem (MB)", format="%.0f"),

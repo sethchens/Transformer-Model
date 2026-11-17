@@ -36,6 +36,7 @@ save_checkpoint(model, cfg, tcfg, ckpt_path)
 
 # for total training time (M2 from SRS)
 t0 = time.perf_counter()
+history = [] # loss curve: one point per eval, saved with the results
 
 # training loop
 for step in range(tcfg.max_iters):
@@ -43,6 +44,7 @@ for step in range(tcfg.max_iters):
         save_checkpoint(model, cfg, tcfg, ckpt_path)
         losses = estimate_loss(model, {"train": train, "val": val}, tcfg.batch_size, cfg.block_size, device)
         print(f"step {step}: train {losses['train']:.4f}, val {losses['val']:.4f}")
+        history.append({"step": step, "train": float(losses["train"]), "val": float(losses["val"]), "lr": get_lr(step, tcfg)})
 
     x, y = get_batch(train, batch_size=tcfg.batch_size, block_size=cfg.block_size, device=device)
     _, loss = model(x, y)
@@ -54,13 +56,14 @@ for step in range(tcfg.max_iters):
     opt.step()
 
 # computing the total training time (M2 from SRS)
-print(f"training time: {(time.perf_counter() - t0) / 60:.1f} min")
+train_min = (time.perf_counter() - t0) / 60
+print(f"training time: {train_min:.1f} min")
 
 # save the model
 save_checkpoint(model, cfg, tcfg, ckpt_path)
 
 # save the result
-evaluate_and_save(model, val, 'val', tcfg)
+evaluate_and_save(model, val, 'val', tcfg, history=history, train_min=train_min)
 
 # sample text
 generate(ckpt_path=ckpt_path, device=device)
